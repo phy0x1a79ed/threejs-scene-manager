@@ -1,4 +1,5 @@
 import * as THREE from 'three'
+import { computeFrameDistance, computeFrameTarget } from './auto-frame.js'
 
 /**
  * createSceneManager — multi-scene navigation with smooth camera transitions.
@@ -112,8 +113,20 @@ export function createSceneManager(opts) {
       orbitTargetGoal.copy(nextScene.cameraTarget)
     }
 
-    // Zoom distance
-    if (nextScene.zoomDistance != null) {
+    // Auto-frame (takes priority over zoomDistance)
+    if (nextScene.autoFrame) {
+      const objs = typeof nextScene.autoFrame === 'function'
+        ? nextScene.autoFrame()
+        : nextScene.autoFrame
+      if (objs) {
+        const padding = nextScene.autoFramePadding || 1.2
+        zoomDistGoal = computeFrameDistance(objs, camera, padding)
+        zoomSettled = false
+        if (!nextScene.cameraTarget) {
+          orbitTargetGoal.copy(computeFrameTarget(objs))
+        }
+      }
+    } else if (nextScene.zoomDistance != null) {
       zoomDistGoal = nextScene.zoomDistance
       zoomSettled = false
     } else {

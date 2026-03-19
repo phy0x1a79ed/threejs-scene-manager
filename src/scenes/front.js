@@ -4,7 +4,8 @@ import { shared } from './index.js'
 export default {
   name: 'front',
   cameraTarget: new THREE.Vector3(0, 1, 0),
-  zoomDistance: 5,
+  autoFrame: () => shared.mesh,
+  autoFramePadding: 1.3,
   overlays: {
     title: 'Welcome',
     subtitle: 'Arrow keys or nav dots to navigate',

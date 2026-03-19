@@ -2,6 +2,7 @@ import * as THREE from 'three'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import { createSceneManager } from './scene-manager.js'
 import { createContent, scenes } from './scenes/index.js'
+import { initPointCloud } from './scenes/points.js'
 import { initOverlays } from './overlays.js'
 
 // --- Renderer ---
@@ -55,6 +56,7 @@ scene.add(ambient)
 
 // --- Content ---
 createContent(scene)
+initPointCloud(scene)
 initOverlays()
 
 // --- Scene Manager ---

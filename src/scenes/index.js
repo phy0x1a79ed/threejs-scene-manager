@@ -1,11 +1,14 @@
 import * as THREE from 'three'
 import front from './front.js'
 import overview from './overview.js'
+import points from './points.js'
+import chart from './chart.js'
 
 // Shared state accessible by scene files
 export const shared = {
   mesh: null,
   floor: null,
+  pointCloud: null,
 }
 
 export function createContent(scene) {
@@ -34,4 +37,4 @@ export function createContent(scene) {
   scene.add(shared.mesh)
 }
 
-export const scenes = [front, overview]
+export const scenes = [front, overview, points, chart]

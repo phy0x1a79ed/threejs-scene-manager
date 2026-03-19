@@ -1,10 +1,8 @@
-import * as THREE from 'three'
 import { shared } from './index.js'
 
 export default {
   name: 'overview',
-  cameraTarget: new THREE.Vector3(0, 2, -3),
-  zoomDistance: 10,
+  autoFrame: () => [shared.mesh, shared.floor],
   overlays: {
     title: 'Overview',
     subtitle: 'A wider perspective on the scene',
