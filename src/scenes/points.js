@@ -57,6 +57,7 @@ export function initPointCloud(threeScene) {
 
 export default {
   name: 'points',
+  visible: () => [shared.pointCloud],
   autoFrame: () => shared.pointCloud,
   autoFramePadding: 1.4,
   overlays: {
@@ -64,15 +65,10 @@ export default {
     subtitle: 'GPU color transitions between palettes',
   },
   onEnter(prev, sm) {
-    if (shared.pointCloud) shared.pointCloud.visible = true
-    if (shared.mesh) shared.mesh.visible = false
     // Transition to warm palette
     if (ct) ct.setColors(generateColors('warm'))
     // Preload the chart scene's figure
     preloadFigure('/data/sample-chart.json')
-  },
-  onLeave(next, sm) {
-    if (shared.pointCloud) shared.pointCloud.visible = false
   },
   onUpdate(elapsed, dt) {
     if (ct) ct.update(0.04)

@@ -3,15 +3,13 @@ import { shared } from './index.js'
 
 export default {
   name: 'front',
+  visible: () => [shared.mesh, shared.floor],
   cameraTarget: new THREE.Vector3(0, 1, 0),
   autoFrame: () => shared.mesh,
   autoFramePadding: 1.3,
   overlays: {
     title: 'Welcome',
     subtitle: 'Arrow keys or nav dots to navigate',
-  },
-  onEnter(prev, sm) {
-    if (shared.mesh) shared.mesh.visible = true
   },
   onUpdate(elapsed, dt) {
     if (shared.mesh) {

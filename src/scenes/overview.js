@@ -2,13 +2,11 @@ import { shared } from './index.js'
 
 export default {
   name: 'overview',
+  visible: () => [shared.mesh, shared.floor],
   autoFrame: () => [shared.mesh, shared.floor],
   overlays: {
     title: 'Overview',
     subtitle: 'A wider perspective on the scene',
-  },
-  onEnter(prev, sm) {
-    if (shared.mesh) shared.mesh.visible = true
   },
   onUpdate(elapsed, dt) {
     if (shared.mesh) {

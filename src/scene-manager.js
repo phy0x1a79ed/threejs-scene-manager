@@ -19,6 +19,32 @@ export function createSceneManager(opts) {
   const orbitTargetGoal = new THREE.Vector3()
   let zoomDistGoal = null
   let zoomSettled = true
+  let transitioning = false
+
+  // Cancel camera transition on user input (zoom, pan, rotate)
+  function onControlsStart() {
+    if (transitioning) {
+      transitioning = false
+    }
+  }
+  controls.addEventListener('start', onControlsStart)
+
+  // Visibility helpers
+  function resolveVisible(scene) {
+    if (!scene.visible) return new Set()
+    const objs = typeof scene.visible === 'function' ? scene.visible() : scene.visible
+    if (!objs) return new Set()
+    const arr = Array.isArray(objs) ? objs : [objs]
+    return new Set(arr.filter(Boolean))
+  }
+
+  function resolveAllManaged() {
+    const all = new Set()
+    for (const s of scenes) {
+      for (const obj of resolveVisible(s)) all.add(obj)
+    }
+    return all
+  }
 
   // Collect all panel IDs referenced by any scene
   const allPanelIds = new Set()
@@ -78,9 +104,9 @@ export function createSceneManager(opts) {
   window.addEventListener('keydown', onKeyDown)
 
   // Core navigation
-  function goTo(idx) {
+  function goTo(idx, { force = false } = {}) {
     const clamped = Math.max(0, Math.min(scenes.length - 1, idx))
-    if (clamped === currentIndex) return
+    if (clamped === currentIndex && !force) return
 
     const prevIdx = currentIndex
     const prevScene = prevIdx >= 0 ? scenes[prevIdx] : null
@@ -108,6 +134,13 @@ export function createSceneManager(opts) {
       }
     }
 
+    // Apply declarative visibility
+    const nextVisible = resolveVisible(nextScene)
+    const allManaged = resolveAllManaged()
+    for (const obj of allManaged) {
+      obj.visible = nextVisible.has(obj)
+    }
+
     // Camera target
     if (nextScene.cameraTarget) {
       orbitTargetGoal.copy(nextScene.cameraTarget)
@@ -133,6 +166,9 @@ export function createSceneManager(opts) {
       zoomSettled = true
     }
 
+    // Start camera transition
+    transitioning = true
+
     // Call onEnter on new scene
     if (nextScene.onEnter) {
       nextScene.onEnter(prevScene, manager)
@@ -144,18 +180,26 @@ export function createSceneManager(opts) {
 
   // Per-frame update: lerp camera, call active scene's onUpdate
   function update(elapsed, dt) {
-    // Lerp orbit target
-    controls.target.lerp(orbitTargetGoal, lerpRate)
+    if (transitioning) {
+      // Lerp orbit target
+      controls.target.lerp(orbitTargetGoal, lerpRate)
+      const targetSettled = controls.target.distanceTo(orbitTargetGoal) < 0.05
 
-    // Lerp zoom distance if active
-    if (!zoomSettled && zoomDistGoal != null) {
-      const offset = camera.position.clone().sub(controls.target)
-      const currentDist = offset.length()
-      const newDist = currentDist + (zoomDistGoal - currentDist) * lerpRate
-      offset.normalize().multiplyScalar(newDist)
-      camera.position.copy(controls.target).add(offset)
-      if (Math.abs(newDist - zoomDistGoal) < 0.1) {
-        zoomSettled = true
+      // Lerp zoom distance if active
+      if (!zoomSettled && zoomDistGoal != null) {
+        const offset = camera.position.clone().sub(controls.target)
+        const currentDist = offset.length()
+        const newDist = currentDist + (zoomDistGoal - currentDist) * lerpRate
+        offset.normalize().multiplyScalar(newDist)
+        camera.position.copy(controls.target).add(offset)
+        if (Math.abs(newDist - zoomDistGoal) < 0.1) {
+          zoomSettled = true
+        }
+      }
+
+      // Settle when both are done
+      if (targetSettled && zoomSettled) {
+        transitioning = false
       }
     }
 
@@ -168,6 +212,7 @@ export function createSceneManager(opts) {
 
   function dispose() {
     window.removeEventListener('keydown', onKeyDown)
+    controls.removeEventListener('start', onControlsStart)
     if (dotsContainer) dotsContainer.remove()
   }
 
@@ -179,6 +224,7 @@ export function createSceneManager(opts) {
     dispose,
     get currentIndex() { return currentIndex },
     get currentScene() { return scenes[currentIndex] },
+    get isTransitioning() { return transitioning },
   }
 
   return manager

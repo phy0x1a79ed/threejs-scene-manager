@@ -3,7 +3,11 @@ import * as THREE from 'three'
 import { createSceneManager } from '../scene-manager.js'
 
 function makeControls() {
-  return { target: new THREE.Vector3() }
+  return {
+    target: new THREE.Vector3(),
+    addEventListener() {},
+    removeEventListener() {},
+  }
 }
 
 function makeCamera() {
@@ -228,6 +232,107 @@ describe('nav dots', () => {
     const dots = navContainer.querySelectorAll('.nav-dot')
     expect(dots[0].classList.contains('active')).toBe(false)
     expect(dots[1].classList.contains('active')).toBe(true)
+  })
+})
+
+describe('declarative visibility', () => {
+  it('shows objects in visible and hides others', () => {
+    const objA = { visible: true }
+    const objB = { visible: true }
+    const s0 = makeScene({ name: 'a', visible: [objA] })
+    const s1 = makeScene({ name: 'b', visible: [objB] })
+    const mgr = createSceneManager({ scenes: [s0, s1], controls, camera })
+    mgr.goTo(0)
+    expect(objA.visible).toBe(true)
+    expect(objB.visible).toBe(false)
+    mgr.goTo(1)
+    expect(objA.visible).toBe(false)
+    expect(objB.visible).toBe(true)
+  })
+
+  it('visible as function is called lazily', () => {
+    const obj = { visible: false }
+    const s0 = makeScene({ visible: () => [obj] })
+    const mgr = createSceneManager({ scenes: [s0], controls, camera })
+    mgr.goTo(0)
+    expect(obj.visible).toBe(true)
+  })
+
+  it('objects not in any visible list are left alone', () => {
+    const unmanaged = { visible: true }
+    const s0 = makeScene({ visible: [] })
+    const mgr = createSceneManager({ scenes: [s0], controls, camera })
+    mgr.goTo(0)
+    expect(unmanaged.visible).toBe(true)
+  })
+
+  it('scene without visible property leaves all objects alone', () => {
+    const obj = { visible: true }
+    const s0 = makeScene({ name: 'a', visible: [obj] })
+    const s1 = makeScene({ name: 'b' }) // no visible
+    const mgr = createSceneManager({ scenes: [s0, s1], controls, camera })
+    mgr.goTo(0)
+    expect(obj.visible).toBe(true)
+    mgr.goTo(1)
+    // obj is managed (referenced by s0), so hidden when s1 has no visible
+    expect(obj.visible).toBe(false)
+  })
+})
+
+describe('camera interruption', () => {
+  function makeInterruptControls() {
+    const listeners = {}
+    return {
+      target: new THREE.Vector3(),
+      addEventListener(evt, fn) { listeners[evt] = fn },
+      removeEventListener() {},
+      _fire(evt) { if (listeners[evt]) listeners[evt]() },
+    }
+  }
+
+  it('stops lerping when controls emit start event', () => {
+    const ctrls = makeInterruptControls()
+    const scenes = [makeScene({ cameraTarget: new THREE.Vector3(10, 0, 0), zoomDistance: 20 })]
+    const mgr = createSceneManager({ scenes, controls: ctrls, camera, lerpRate: 0.05 })
+    mgr.goTo(0)
+
+    // A few frames of lerping
+    for (let i = 0; i < 5; i++) mgr.update(0, 0.016)
+    const posAfterLerp = ctrls.target.x
+    expect(posAfterLerp).toBeGreaterThan(0)
+
+    // User interrupts
+    ctrls._fire('start')
+    expect(mgr.isTransitioning).toBe(false)
+
+    // More frames — should not move further
+    for (let i = 0; i < 50; i++) mgr.update(0, 0.016)
+    expect(ctrls.target.x).toBe(posAfterLerp)
+  })
+
+  it('goTo with force re-triggers after interruption', () => {
+    const ctrls = makeInterruptControls()
+    const scenes = [makeScene({ cameraTarget: new THREE.Vector3(10, 0, 0) })]
+    const mgr = createSceneManager({ scenes, controls: ctrls, camera })
+    mgr.goTo(0)
+    ctrls._fire('start')
+    expect(mgr.isTransitioning).toBe(false)
+
+    mgr.goTo(0, { force: true })
+    expect(mgr.isTransitioning).toBe(true)
+  })
+
+  it('transition settles naturally when target reached', () => {
+    const scenes = [makeScene({ cameraTarget: new THREE.Vector3(0, 0, 0) })]
+    camera.position.set(0, 0, 5)
+    controls.target.set(0, 0, 0)
+    const mgr = createSceneManager({ scenes, controls, camera, lerpRate: 0.5 })
+    mgr.goTo(0)
+    expect(mgr.isTransitioning).toBe(true)
+
+    // Run enough frames to settle
+    for (let i = 0; i < 100; i++) mgr.update(0, 0.016)
+    expect(mgr.isTransitioning).toBe(false)
   })
 })
 
