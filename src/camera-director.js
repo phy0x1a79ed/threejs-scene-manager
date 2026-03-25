@@ -43,18 +43,21 @@ export class CameraDirector {
 
     /** Called when user grabs during a transition — set by scene-manager */
     this.onInterrupt = null
+    this._pointerDown = false
 
     this._onStart = () => {
       if (this._state === 'transitioning') {
         // User interrupted transition — notify manager to snap
         if (this.onInterrupt) this.onInterrupt()
       }
+      this._pointerDown = true
       this._state = 'user'
       this._idleTimer = 0
       controls.autoRotate = false
       controls.enabled = true // re-enable in case transition had disabled
     }
     this._onEnd = () => {
+      this._pointerDown = false
       // Reset idle timer on release — update() counts up from here
       if (this._state === 'user') this._idleTimer = 0
     }
@@ -152,10 +155,12 @@ export class CameraDirector {
     if (this._state === 'transitioning') return
 
     if (this._state === 'user') {
-      this._idleTimer += dt
-      if (this._idleTimer >= this._idleDelay) {
-        this._state = 'idle'
-        this._controls.autoRotate = !this._autoRotatePaused
+      if (!this._pointerDown) {
+        this._idleTimer += dt
+        if (this._idleTimer >= this._idleDelay) {
+          this._state = 'idle'
+          this._controls.autoRotate = !this._autoRotatePaused
+        }
       }
       return // no easing while user is active
     }
