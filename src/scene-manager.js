@@ -18,6 +18,7 @@ import { CameraDirector } from './camera-director.js'
  * @param {object} opts.camera         — PerspectiveCamera
  * @param {object} [opts.orthoCamera]  — OrthographicCamera (for scenes with cameraType:'orthographic')
  * @param {object} [opts.props]        — named props by type { camera: { name: config } }
+ * @param {object} [opts.scene]        — Three.js Scene (for transition temp objects)
  * @param {HTMLElement} [opts.navContainer] — element for nav dots
  * @returns {object} manager API
  */
@@ -41,6 +42,8 @@ export function createSceneManager(opts) {
       const active = currentIndex >= 0 ? scenes[currentIndex] : null
       if (active && !currentSameCamera) director.setKeyframe(resolveKeyframe(active))
       runner = null
+      transitionSourceScene = null
+      transitionSourceProps = null
     }
   }
 
@@ -48,6 +51,8 @@ export function createSceneManager(opts) {
   let runner = null
   let pendingVisibility = null  // deferred visibility set
   let currentSameCamera = false // true when prev/next scenes share a camera prop
+  let transitionSourceScene = null  // source scene kept alive during transition
+  let transitionSourceProps = null  // resolved props for source scene during transition
   const activatedScenes = new Set()  // for onActivate one-shot
 
   // --- Build transition lookup (from.name → to.name → def) ---
@@ -71,6 +76,65 @@ export function createSceneManager(opts) {
   function findTransition(fromName, toName) {
     return transitionMap.get(transKey(fromName, toName)) ?? null
   }
+
+  // --- Prop resolution for scenes ---
+
+  /** Resolve a scene's declared props into live mutable state objects */
+  function resolveSceneProps(scene) {
+    if (!scene.props) return null
+    const resolved = {}
+    for (const [key, ref] of Object.entries(scene.props)) {
+      if (typeof ref === 'string') {
+        // Search all prop types for this name
+        const state = propRegistry.getState(key, ref)
+        if (state) resolved[key] = state
+      }
+    }
+    return Object.keys(resolved).length > 0 ? resolved : null
+  }
+
+  // --- Transition prop validation ---
+
+  function validateTransitionProps() {
+    const sceneMap = new Map(scenes.map(s => [s.name, s]))
+    const errors = []
+
+    for (const t of transitions) {
+      if (!sceneMap.has(t.from)) errors.push(`Transition references unknown scene '${t.from}'`)
+      if (!sceneMap.has(t.to)) errors.push(`Transition references unknown scene '${t.to}'`)
+      if (!sceneMap.has(t.from) || !sceneMap.has(t.to)) continue
+
+      // Validate transition's declared prop dependencies are resolvable
+      if (t.props) {
+        for (const propRef of t.props) {
+          let found = false
+          for (const [type, entries] of propRegistry._defs) {
+            if (entries.has(propRef)) { found = true; break }
+          }
+          if (!found) errors.push(`Transition ${t.from}→${t.to}: prop '${propRef}' not found in any prop type`)
+        }
+      }
+
+      // Validate slaved prop references
+      if (t.slavedProps) {
+        for (const propName of Object.keys(t.slavedProps)) {
+          let found = false
+          for (const [type, entries] of propRegistry._defs) {
+            if (entries.has(propName)) { found = true; break }
+          }
+          if (!found) errors.push(`Transition ${t.from}→${t.to}: slavedProp '${propName}' not found in any prop type`)
+        }
+      }
+    }
+
+    if (errors.length > 0) {
+      const msg = 'Scene manager prop validation errors:\n' + errors.join('\n')
+      console.error(msg)
+      throw new Error(msg)
+    }
+  }
+
+  validateTransitionProps()
 
   // --- Panels ---
   const allPanelIds = new Set()
@@ -258,6 +322,10 @@ export function createSceneManager(opts) {
       finalizeTransition()
     }
 
+    // Store source scene for onUpdate during transition
+    transitionSourceScene = prevScene
+    transitionSourceProps = prevScene ? resolveSceneProps(prevScene) : null
+
     currentIndex = clamped
     updateDots()
 
@@ -329,6 +397,7 @@ export function createSceneManager(opts) {
         orthoCamera,
         reverse,
         sameCamera: currentSameCamera,
+        scene: opts.scene,
       })
     }
 
@@ -360,11 +429,20 @@ export function createSceneManager(opts) {
   // --- Per-frame update ---
 
   function update(elapsed, dt) {
-    // Drive active transition
-    if (runner && !runner.isComplete) {
+    const transitioning = runner && !runner.isComplete
+
+    if (transitioning) {
+      // Source scene keeps running during transition (drives rotation, etc.)
+      if (transitionSourceScene?.onUpdate) {
+        transitionSourceScene.onUpdate(elapsed, dt, transitionSourceProps)
+      }
+
+      // Drive active transition (tracks + lifecycle hooks)
       runner.update(elapsed)
       if (runner.isComplete) {
         finalizeTransition()
+        transitionSourceScene = null
+        transitionSourceProps = null
       }
     }
 
@@ -376,9 +454,11 @@ export function createSceneManager(opts) {
       for (const fn of fns) fn(elapsed, dt, obj)
     }
 
-    // Per-frame callback for active scene (backward compat)
-    const active = currentIndex >= 0 ? scenes[currentIndex] : null
-    if (active?.onUpdate) active.onUpdate(elapsed, dt)
+    // Per-frame callback for active scene (only when NOT transitioning)
+    if (!transitioning) {
+      const active = currentIndex >= 0 ? scenes[currentIndex] : null
+      if (active?.onUpdate) active.onUpdate(elapsed, dt, resolveSceneProps(active))
+    }
   }
 
   // --- Cleanup ---

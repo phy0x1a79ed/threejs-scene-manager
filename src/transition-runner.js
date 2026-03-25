@@ -41,10 +41,18 @@ export class TransitionRunner {
     this._easing = resolveEasing(opts.transition.easing)
     this._startTime = null
     this._complete = false
+    this._completeCalled = false
     this._tracks = []
     this._visibilityApplied = false
 
+    // Lifecycle hooks context
+    this._ctx = null
+    this._slavedCopies = []
+    this._tempObjects = []  // objects loaded via ctx.load(), cleaned up on complete
+    this._scene = opts.scene ?? null  // Three.js scene for adding/removing temp objects
+
     this._buildTracks()
+    this._buildCtx()
   }
 
   get isComplete() { return this._complete }
@@ -364,24 +372,132 @@ export class TransitionRunner {
     return scene.properties?.[objName]?.[pName] ?? null
   }
 
+  // --- Lifecycle context ---
+
+  /** Build the ctx object passed to transition lifecycle hooks */
+  _buildCtx() {
+    const trans = this._transition
+    if (!trans.onStart && !trans.onUpdate && !trans.onComplete) return
+
+    const props = {}
+    const clones = {}
+
+    if (this._propRegistry) {
+      // Build read-only views for declared props
+      if (trans.props) {
+        for (const propRef of trans.props) {
+          // propRef is a prop name — scan all types to find it
+          for (const [type, entries] of this._propRegistry._defs) {
+            if (entries.has(propRef)) {
+              props[propRef] = this._propRegistry.createReadOnlyView(type, propRef)
+              break
+            }
+          }
+        }
+      }
+
+      // Build slaved clones
+      if (trans.slavedProps) {
+        for (const [propName, slavedKeys] of Object.entries(trans.slavedProps)) {
+          for (const [type, entries] of this._propRegistry._defs) {
+            if (entries.has(propName)) {
+              const clone = this._propRegistry.createSlavedCopy(type, propName, slavedKeys)
+              if (clone) {
+                clones[propName] = clone.data
+                this._slavedCopies.push(clone)
+              }
+              break
+            }
+          }
+        }
+      }
+    }
+
+    const registry = this._registry
+    const tempObjects = this._tempObjects
+    const scene = this._scene
+
+    this._ctx = {
+      t: 0,
+      elapsed: 0,
+      dt: 0,
+      props,
+      clones,
+      registry,
+      fromScene: this._fromScene,
+      toScene: this._toScene,
+
+      /** Show a registered object */
+      show(name) {
+        const obj = registry.tryResolve(name)
+        if (obj) obj.visible = true
+      },
+
+      /** Hide a registered object */
+      hide(name) {
+        const obj = registry.tryResolve(name)
+        if (obj) obj.visible = false
+      },
+
+      /** Register + show a temporary object (auto-cleaned on transition end) */
+      load(name, obj) {
+        registry.register(name, obj)
+        if (scene) scene.add(obj)
+        obj.visible = true
+        tempObjects.push({ name, obj })
+      },
+    }
+  }
+
+  /** Sync slaved copies and update ctx time fields */
+  _syncCtx(t, elapsed, dt) {
+    if (!this._ctx) return
+    for (const clone of this._slavedCopies) clone.sync()
+    this._ctx.t = t
+    this._ctx.elapsed = elapsed
+    this._ctx.dt = dt
+  }
+
+  /** Clean up temporary objects loaded during the transition */
+  _cleanupTempObjects() {
+    for (const { name, obj } of this._tempObjects) {
+      if (this._scene) this._scene.remove(obj)
+      // Note: registry doesn't have an unregister method currently,
+      // but the object is removed from the scene graph
+    }
+    this._tempObjects = []
+  }
+
   // --- Runtime ---
 
   /** Call every frame with cumulative elapsed time (seconds) */
   update(elapsed) {
     if (this._complete) return
 
-    if (this._startTime == null) this._startTime = elapsed
+    const firstFrame = this._startTime == null
+    if (firstFrame) {
+      this._startTime = elapsed
+      if (this._transition.onStart && this._ctx) {
+        this._syncCtx(0, elapsed, 0)
+        this._transition.onStart(this._ctx)
+      }
+    }
 
     const elapsedMs = (elapsed - this._startTime) * 1000
     const t = Math.min(1, elapsedMs / this._duration)
+    const dt = firstFrame ? 0 : (elapsed - this._ctx?.elapsed ?? 0)
 
     for (const track of this._tracks) {
       track.apply(t)
     }
 
+    // Sync slaved copies and call transition onUpdate
+    if (this._transition.onUpdate && this._ctx) {
+      this._syncCtx(t, elapsed, dt)
+      this._transition.onUpdate(t, this._ctx)
+    }
+
     if (t >= 1) {
-      // Snap to clean end state — restores base opacities on faded-out objects
-      // so future transitions capture the correct base values
       this.snap()
     }
   }
@@ -391,6 +507,12 @@ export class TransitionRunner {
     for (const track of this._tracks) {
       track.snap()
     }
+    if (!this._completeCalled && this._transition.onComplete && this._ctx) {
+      this._completeCalled = true
+      this._syncCtx(1, this._ctx.elapsed, 0)
+      this._transition.onComplete(this._ctx)
+    }
+    this._cleanupTempObjects()
     this._complete = true
   }
 }
