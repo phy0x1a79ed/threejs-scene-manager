@@ -364,7 +364,13 @@ export class TransitionRunner {
     const fadeOut = [...fromVisible].filter(n => !toVisible.has(n) && !handledFadeOut.has(n))
     const fadeIn = [...toVisible].filter(n => !fromVisible.has(n) && !handledFadeIn.has(n))
     if (fadeOut.length || fadeIn.length) {
+      // fromScene/toScene already reflect actual navigation direction,
+      // so skip the reverse swap that _addCrossfadeTrack applies to
+      // explicitly-defined tracks (which are authored for the forward direction).
+      const savedReverse = this._reverse
+      this._reverse = false
       this._addCrossfadeTrack({ fadeOut, fadeIn })
+      this._reverse = savedReverse
     }
     // Flag that this transition has crossfade work so the manager can defer visibility
     this._hasCrossfade = this._tracks.some(t => t.type === 'crossfade')
