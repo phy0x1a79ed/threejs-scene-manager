@@ -187,11 +187,19 @@ export class TransitionRunner {
     const fadeInObjs = fadeInNames.map(n => this._registry.tryResolve(n)).filter(Boolean)
 
     // Capture base opacities on first run
+    // For ShaderMaterials with uOpacity uniform, use that instead of material.opacity
     const captured = new Map()
+    const hasShaderOpacity = (mat) => mat.uniforms?.uOpacity != null
+    const getOpacity = (mat) => hasShaderOpacity(mat) ? mat.uniforms.uOpacity.value : mat.opacity
+    const setOpacity = (mat, v) => {
+      if (hasShaderOpacity(mat)) mat.uniforms.uOpacity.value = v
+      else mat.opacity = v
+    }
+
     const capture = (obj) => {
       obj.traverse((child) => {
         if (child.material && !captured.has(child.material)) {
-          captured.set(child.material, child.material.opacity)
+          captured.set(child.material, getOpacity(child.material))
         }
       })
     }
@@ -201,7 +209,7 @@ export class TransitionRunner {
     for (const obj of fadeInObjs) {
       obj.visible = true
       obj.traverse((child) => {
-        if (child.material) child.material.opacity = 0
+        if (child.material) setOpacity(child.material, 0)
       })
     }
 
@@ -214,7 +222,7 @@ export class TransitionRunner {
           obj.traverse((child) => {
             if (child.material) {
               const base = captured.get(child.material) ?? 1
-              child.material.opacity = base * (1 - et)
+              setOpacity(child.material, base * (1 - et))
             }
           })
         }
@@ -223,7 +231,7 @@ export class TransitionRunner {
           obj.traverse((child) => {
             if (child.material) {
               const base = captured.get(child.material) ?? 1
-              child.material.opacity = base * et
+              setOpacity(child.material, base * et)
             }
           })
         }
@@ -232,13 +240,13 @@ export class TransitionRunner {
         for (const obj of fadeOutObjs) {
           obj.visible = false
           obj.traverse((child) => {
-            if (child.material) child.material.opacity = captured.get(child.material) ?? 1
+            if (child.material) setOpacity(child.material, captured.get(child.material) ?? 1)
           })
         }
         for (const obj of fadeInObjs) {
           obj.visible = true
           obj.traverse((child) => {
-            if (child.material) child.material.opacity = captured.get(child.material) ?? 1
+            if (child.material) setOpacity(child.material, captured.get(child.material) ?? 1)
           })
         }
       },

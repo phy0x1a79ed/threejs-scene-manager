@@ -218,6 +218,17 @@ export function createSceneManager(opts) {
         if (obj) obj.visible = true
       }
     }
+    // Reset crossfade opacity on visible ShaderMaterial children — safety net
+    // against state leaks from snapped or interrupted transitions
+    for (const name of visibleSet) {
+      const obj = registry.tryResolve(name)
+      if (!obj) continue
+      obj.traverse((child) => {
+        if (child.visible && child.material?.uniforms?.uOpacity) {
+          child.material.uniforms.uOpacity.value = 1.0
+        }
+      })
+    }
   }
 
   // --- Apply scene state (non-animated, immediate) ---
