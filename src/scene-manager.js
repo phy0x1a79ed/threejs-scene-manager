@@ -1,58 +1,83 @@
-import * as THREE from 'three'
+import { Registry } from './registry.js'
+import { PropRegistry } from './prop-registry.js'
+import { TransitionRunner } from './transition-runner.js'
 import { computeFrameDistance, computeFrameTarget } from './auto-frame.js'
+import { CameraDirector } from './camera-director.js'
 
 /**
- * createSceneManager — multi-scene navigation with smooth camera transitions.
+ * createSceneManager — declarative scenes + explicit transitions.
+ *
+ * Scenes are pure state snapshots (visibility, camera, uniforms, properties).
+ * Transitions describe HOW to animate between scene pairs.
+ * The Three.js scene graph provides the scene tree and inherited transforms.
  *
  * @param {object} opts
- * @param {Array}  opts.scenes        — ordered array of scene definition objects
- * @param {object} opts.controls      — OrbitControls instance
- * @param {object} opts.camera        — PerspectiveCamera
- * @param {number} [opts.lerpRate]    — camera transition speed (default 0.03)
- * @param {HTMLElement} [opts.navContainer] — element to append nav dots to
- * @returns {{ goTo, next, prev, update, currentIndex, currentScene, dispose }}
+ * @param {Array}  opts.scenes         — ordered scene declarations
+ * @param {Array}  [opts.transitions]  — explicit transition definitions
+ * @param {object} opts.controls       — OrbitControls instance
+ * @param {object} opts.camera         — PerspectiveCamera
+ * @param {object} [opts.orthoCamera]  — OrthographicCamera (for scenes with cameraType:'orthographic')
+ * @param {object} [opts.props]        — named props by type { camera: { name: config } }
+ * @param {HTMLElement} [opts.navContainer] — element for nav dots
+ * @returns {object} manager API
  */
 export function createSceneManager(opts) {
-  const { scenes, controls, camera, lerpRate = 0.03, navContainer } = opts
+  const { scenes, transitions = [], controls, camera, orthoCamera, navContainer } = opts
+
+  const registry = new Registry()
+  const propRegistry = new PropRegistry(opts.props)
+  const directorOpts = { ...opts.directorOpts, orthoCamera }
+  const director = new CameraDirector(camera, controls, directorOpts)
+
+  // Wire transition interruption: user grabs during transition → snap it
+  director.onInterrupt = () => {
+    if (runner && !runner.isComplete) {
+      runner.snap()
+      // Finalize without calling endTransition — director handles its own state
+      if (pendingVisibility) {
+        applyVisibility(pendingVisibility)
+        pendingVisibility = null
+      }
+      const active = currentIndex >= 0 ? scenes[currentIndex] : null
+      if (active && !currentSameCamera) director.setKeyframe(resolveKeyframe(active))
+      runner = null
+    }
+  }
 
   let currentIndex = -1
-  const orbitTargetGoal = new THREE.Vector3()
-  let zoomDistGoal = null
-  let zoomSettled = true
-  let transitioning = false
+  let runner = null
+  let pendingVisibility = null  // deferred visibility set
+  let currentSameCamera = false // true when prev/next scenes share a camera prop
+  const activatedScenes = new Set()  // for onActivate one-shot
 
-  // Cancel camera transition on user input (zoom, pan, rotate)
-  function onControlsStart() {
-    if (transitioning) {
-      transitioning = false
+  // --- Build transition lookup (from.name → to.name → def) ---
+  const transitionMap = new Map()
+
+  function transKey(a, b) { return `${a}→${b}` }
+
+  for (const t of transitions) {
+    const dir = t.direction ?? 'both'
+    if (dir === 'both' || dir === 'forward') {
+      transitionMap.set(transKey(t.from, t.to), { def: t, reverse: false })
+    }
+    if (dir === 'both') {
+      transitionMap.set(transKey(t.to, t.from), { def: t, reverse: true })
+    }
+    if (dir === 'reverse') {
+      transitionMap.set(transKey(t.to, t.from), { def: t, reverse: true })
     }
   }
-  controls.addEventListener('start', onControlsStart)
 
-  // Visibility helpers
-  function resolveVisible(scene) {
-    if (!scene.visible) return new Set()
-    const objs = typeof scene.visible === 'function' ? scene.visible() : scene.visible
-    if (!objs) return new Set()
-    const arr = Array.isArray(objs) ? objs : [objs]
-    return new Set(arr.filter(Boolean))
+  function findTransition(fromName, toName) {
+    return transitionMap.get(transKey(fromName, toName)) ?? null
   }
 
-  function resolveAllManaged() {
-    const all = new Set()
-    for (const s of scenes) {
-      for (const obj of resolveVisible(s)) all.add(obj)
-    }
-    return all
-  }
-
-  // Collect all panel IDs referenced by any scene
+  // --- Panels ---
   const allPanelIds = new Set()
   for (const s of scenes) {
-    if (s.showPanels) s.showPanels.forEach(id => allPanelIds.add(id))
+    const ids = s.panels ?? s.showPanels
+    if (ids) ids.forEach(id => allPanelIds.add(id))
   }
-
-  // Panel show/hide with clearTimeout race prevention
   const hideTimers = {}
 
   function hidePanel(id) {
@@ -71,7 +96,7 @@ export function createSceneManager(opts) {
     requestAnimationFrame(() => el.classList.add('visible'))
   }
 
-  // Nav dots
+  // --- Nav dots ---
   let dots = []
   let dotsContainer = null
 
@@ -91,42 +116,159 @@ export function createSceneManager(opts) {
   }
 
   function updateDots() {
-    dots.forEach((dot, i) => {
-      dot.classList.toggle('active', i === currentIndex)
-    })
+    dots.forEach((dot, i) => dot.classList.toggle('active', i === currentIndex))
   }
 
-  // Keyboard navigation
+  // --- Keyboard ---
   function onKeyDown(e) {
     if (e.code === 'ArrowRight') { e.preventDefault(); next() }
     if (e.code === 'ArrowLeft')  { e.preventDefault(); prev() }
   }
   window.addEventListener('keydown', onKeyDown)
 
-  // Core navigation
+  // User interruption handled by CameraDirector via onInterrupt callback
+
+  // --- Visibility ---
+
+  /** Collect all Object3D names referenced by any scene's visible array */
+  function getAllManagedNames() {
+    const names = new Set()
+    for (const s of scenes) {
+      if (s.visible) for (const n of s.visible) names.add(n)
+    }
+    return names
+  }
+
+  function applyVisibility(scene) {
+    const visibleSet = new Set(scene.visible ?? [])
+    for (const name of getAllManagedNames()) {
+      const obj = registry.tryResolve(name)
+      if (obj) obj.visible = visibleSet.has(name)
+    }
+    // Also apply keepVisible from active transition
+    const trans = runner?._transition
+    if (trans?.keepVisible) {
+      for (const name of trans.keepVisible) {
+        const obj = registry.tryResolve(name)
+        if (obj) obj.visible = true
+      }
+    }
+  }
+
+  // --- Apply scene state (non-animated, immediate) ---
+
+  function applySceneState(scene) {
+    // Uniforms — set directly
+    if (scene.uniforms) {
+      for (const [objName, uniforms] of Object.entries(scene.uniforms)) {
+        const obj = registry.tryResolve(objName)
+        if (!obj?.material?.uniforms) continue
+        for (const [uName, val] of Object.entries(uniforms)) {
+          if (obj.material.uniforms[uName]) {
+            obj.material.uniforms[uName].value = val
+          }
+        }
+      }
+    }
+
+    // Properties — call setters directly
+    if (scene.properties) {
+      for (const [objName, props] of Object.entries(scene.properties)) {
+        for (const [pName, val] of Object.entries(props)) {
+          const setter = registry.resolveProperty(objName, pName)
+          if (setter) setter(val)
+        }
+      }
+    }
+
+    // Legend
+    if (scene.legend) {
+      const builder = registry.resolveLegend(scene.legend)
+      if (builder) builder()
+      const el = document.getElementById('legend')
+      if (el) el.style.display = ''
+    } else if (scene.legend === null) {
+      const el = document.getElementById('legend')
+      if (el) el.style.display = 'none'
+    }
+  }
+
+  // --- Camera keyframe from scene declaration ---
+
+  function resolveKeyframe(scene) {
+    // Resolve camera prop: string → named prop lookup, object → inline
+    const cam = propRegistry.resolve('camera', scene.camera) ?? {}
+    const keyframe = {}
+
+    if (cam.target) {
+      const resolved = registry.tryResolve(cam.target)
+      if (resolved?.isVector3) keyframe.target = resolved
+    }
+
+    if (cam.frame) {
+      const frameObj = registry.tryResolve(cam.frame)
+      if (frameObj) {
+        const padding = cam.framePadding ?? 1.2
+        keyframe.zoom = computeFrameDistance(frameObj, camera, padding)
+        if (!keyframe.target) keyframe.target = computeFrameTarget(frameObj)
+      }
+    } else if (cam.zoom != null) {
+      keyframe.zoom = cam.zoom
+    }
+
+    // Full position (supersedes zoom when present)
+    if (cam.position) {
+      const resolved = registry.tryResolve(cam.position)
+      keyframe.position = resolved?.isVector3 ? resolved : cam.position
+    }
+
+    return keyframe
+  }
+
+  // --- Transition finalization ---
+
+  function finalizeTransition() {
+    if (pendingVisibility) {
+      applyVisibility(pendingVisibility)
+      pendingVisibility = null
+    }
+    // Set keyframe for the active scene — skip when same camera prop (no leaking)
+    const active = currentIndex >= 0 ? scenes[currentIndex] : null
+    if (active && !currentSameCamera) director.setKeyframe(resolveKeyframe(active))
+    director.endTransition()
+    runner = null
+  }
+
+  // --- Core navigation ---
+
   function goTo(idx, { force = false } = {}) {
     const clamped = Math.max(0, Math.min(scenes.length - 1, idx))
     if (clamped === currentIndex && !force) return
 
-    const prevIdx = currentIndex
-    const prevScene = prevIdx >= 0 ? scenes[prevIdx] : null
+    const prevScene = currentIndex >= 0 ? scenes[currentIndex] : null
     const nextScene = scenes[clamped]
 
-    // Call onLeave on previous scene
-    if (prevScene && prevScene.onLeave) {
-      prevScene.onLeave(nextScene, manager)
+    // Detect same camera prop — scenes sharing a prop skip camera transitions
+    currentSameCamera = prevScene != null
+      && propRegistry.isSameProp(prevScene.camera, nextScene.camera)
+
+    // Snap any in-progress transition
+    if (runner && !runner.isComplete) {
+      runner.snap()
+      finalizeTransition()
     }
 
     currentIndex = clamped
     updateDots()
 
-    // Hide all panels, then show this scene's panels
+    // Panels
     for (const id of allPanelIds) hidePanel(id)
-    if (nextScene.showPanels) {
-      for (const id of nextScene.showPanels) showPanel(id)
+    const showIds = nextScene.panels ?? nextScene.showPanels
+    if (showIds) {
+      for (const id of showIds) showPanel(id)
     }
 
-    // Update overlay text
+    // Overlays
     if (nextScene.overlays) {
       for (const [id, content] of Object.entries(nextScene.overlays)) {
         const el = document.getElementById(id)
@@ -134,97 +276,145 @@ export function createSceneManager(opts) {
       }
     }
 
-    // Apply declarative visibility
-    const nextVisible = resolveVisible(nextScene)
-    const allManaged = resolveAllManaged()
-    for (const obj of allManaged) {
-      obj.visible = nextVisible.has(obj)
-    }
+    // Find transition
+    const match = prevScene ? findTransition(prevScene.name, nextScene.name) : null
+    const transDef = match?.def ?? { tracks: 'auto', duration: 600, easing: 'easeInOut' }
+    const reverse = match?.reverse ?? false
 
-    // Camera target
-    if (nextScene.cameraTarget) {
-      orbitTargetGoal.copy(nextScene.cameraTarget)
-    }
+    // Visibility: defer when transitioning so crossfade tracks can animate
+    if (prevScene) {
+      // Auto-detect visibility changes that need crossfade
+      const fromVis = new Set(prevScene.visible ?? [])
+      const toVis = new Set(nextScene.visible ?? [])
+      const hasVisChange = [...fromVis].some(n => !toVis.has(n)) || [...toVis].some(n => !fromVis.has(n))
 
-    // Auto-frame (takes priority over zoomDistance)
-    if (nextScene.autoFrame) {
-      const objs = typeof nextScene.autoFrame === 'function'
-        ? nextScene.autoFrame()
-        : nextScene.autoFrame
-      if (objs) {
-        const padding = nextScene.autoFramePadding || 1.2
-        zoomDistGoal = computeFrameDistance(objs, camera, padding)
-        zoomSettled = false
-        if (!nextScene.cameraTarget) {
-          orbitTargetGoal.copy(computeFrameTarget(objs))
+      if (transDef.deferVisibility || hasVisChange) {
+        // Keep current + keepVisible objects alive for crossfade animation
+        if (transDef.keepVisible) {
+          for (const name of transDef.keepVisible) {
+            const obj = registry.tryResolve(name)
+            if (obj) obj.visible = true
+          }
         }
+        pendingVisibility = nextScene
+      } else {
+        applyVisibility(nextScene)
       }
-    } else if (nextScene.zoomDistance != null) {
-      zoomDistGoal = nextScene.zoomDistance
-      zoomSettled = false
     } else {
-      zoomSettled = true
+      applyVisibility(nextScene)
     }
 
-    // Start camera transition
-    transitioning = true
+    // Switch camera type if scene declares one
+    const nextCameraType = nextScene.cameraType ?? 'perspective'
+    director.setActiveCameraType(nextCameraType)
 
-    // Call onEnter on new scene
-    if (nextScene.onEnter) {
-      nextScene.onEnter(prevScene, manager)
+    // If no previous scene (first navigation), apply state directly
+    if (!prevScene) {
+      applySceneState(nextScene)
+      // Snap camera via director keyframe
+      const keyframe = resolveKeyframe(nextScene)
+      director.setKeyframe({ ...keyframe, immediate: true })
+    } else {
+      // Begin transition — director disables user controls
+      director.beginTransition()
+      // Create transition runner
+      runner = new TransitionRunner({
+        fromScene: prevScene,
+        toScene: nextScene,
+        transition: transDef,
+        registry,
+        propRegistry,
+        controls,
+        camera,
+        orthoCamera,
+        reverse,
+        sameCamera: currentSameCamera,
+      })
     }
+
+    // Legend (immediate)
+    if (nextScene.legend) {
+      const builder = registry.resolveLegend(nextScene.legend)
+      if (builder) builder()
+      const el = document.getElementById('legend')
+      if (el) el.style.display = ''
+    } else if (nextScene.legend === null) {
+      const el = document.getElementById('legend')
+      if (el) el.style.display = 'none'
+    }
+
+    // One-shot onActivate
+    if (nextScene.onActivate && !activatedScenes.has(nextScene.name)) {
+      activatedScenes.add(nextScene.name)
+      nextScene.onActivate()
+    }
+
+    // Lifecycle callbacks (backward compat with callback-based scenes)
+    if (prevScene?.onLeave) prevScene.onLeave(nextScene, manager)
+    if (nextScene.onEnter) nextScene.onEnter(prevScene, manager)
   }
 
   function next() { goTo(currentIndex + 1) }
   function prev() { goTo(currentIndex - 1) }
 
-  // Per-frame update: lerp camera, call active scene's onUpdate
+  // --- Per-frame update ---
+
   function update(elapsed, dt) {
-    if (transitioning) {
-      // Lerp orbit target
-      controls.target.lerp(orbitTargetGoal, lerpRate)
-      const targetSettled = controls.target.distanceTo(orbitTargetGoal) < 0.05
-
-      // Lerp zoom distance if active
-      if (!zoomSettled && zoomDistGoal != null) {
-        const offset = camera.position.clone().sub(controls.target)
-        const currentDist = offset.length()
-        const newDist = currentDist + (zoomDistGoal - currentDist) * lerpRate
-        offset.normalize().multiplyScalar(newDist)
-        camera.position.copy(controls.target).add(offset)
-        if (Math.abs(newDist - zoomDistGoal) < 0.1) {
-          zoomSettled = true
-        }
-      }
-
-      // Settle when both are done
-      if (targetSettled && zoomSettled) {
-        transitioning = false
+    // Drive active transition
+    if (runner && !runner.isComplete) {
+      runner.update(elapsed)
+      if (runner.isComplete) {
+        finalizeTransition()
       }
     }
 
-    // Active scene update
-    const active = scenes[currentIndex]
-    if (active && active.onUpdate) {
-      active.onUpdate(elapsed, dt)
+    // Camera director — eases keyframes, manages auto-rotate/user handoff
+    director.update(dt)
+
+    // Run tickers for visible objects
+    for (const { name, obj, fns } of registry.getVisibleTickers()) {
+      for (const fn of fns) fn(elapsed, dt, obj)
     }
+
+    // Per-frame callback for active scene (backward compat)
+    const active = currentIndex >= 0 ? scenes[currentIndex] : null
+    if (active?.onUpdate) active.onUpdate(elapsed, dt)
   }
+
+  // --- Cleanup ---
 
   function dispose() {
     window.removeEventListener('keydown', onKeyDown)
-    controls.removeEventListener('start', onControlsStart)
+    director.dispose()
     if (dotsContainer) dotsContainer.remove()
   }
 
+  // --- Public API ---
+
   const manager = {
+    // Navigation
     goTo,
     next,
     prev,
     update,
     dispose,
+
+    // Registry delegation
+    register: (name, obj) => registry.register(name, obj),
+    registerProperty: (objName, propName, setter) => registry.registerProperty(objName, propName, setter),
+    registerLegend: (name, fn) => registry.registerLegend(name, fn),
+    registerTicker: (objName, fn) => registry.registerTicker(objName, fn),
+
+    // Camera director
+    get director() { return director },
+
+    // Active camera (perspective or orthographic based on current scene)
+    get activeCamera() { return director.activeCamera },
+
+    // Getters
     get currentIndex() { return currentIndex },
     get currentScene() { return scenes[currentIndex] },
-    get isTransitioning() { return transitioning },
+    get isTransitioning() { return runner != null && !runner.isComplete },
   }
 
   return manager
