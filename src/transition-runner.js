@@ -262,7 +262,7 @@ export class TransitionRunner {
     if (cam.target) {
       const resolved = this._registry.tryResolve(cam.target)
       if (resolved) {
-        targetGoal = resolved.isVector3 ? resolved.clone() : null
+        targetGoal = resolved.isVector3 ? resolved : null
       }
     }
 

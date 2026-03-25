@@ -298,7 +298,10 @@ export function createSceneManager(opts) {
     }
     // Set keyframe for the active scene — skip when same camera prop (no leaking)
     const active = currentIndex >= 0 ? scenes[currentIndex] : null
-    if (active && !currentSameCamera) director.setKeyframe(resolveKeyframe(active))
+    if (active && !currentSameCamera) {
+      const immediate = (active.cameraType === 'orthographic')
+      director.setKeyframe({ ...resolveKeyframe(active), immediate })
+    }
     director.endTransition()
     runner = null
   }

@@ -118,6 +118,10 @@ export class CameraDirector {
       this._position = null
       this._zoom = zoom
       if (immediate) this._snapZoom(zoom)
+    } else {
+      // Neither position nor zoom — clear both to prevent stale easing
+      this._position = null
+      this._zoom = null
     }
   }
 
@@ -131,8 +135,13 @@ export class CameraDirector {
   /** Exit transition state — re-enable controls, resume auto-rotate */
   endTransition() {
     this._state = 'idle'
-    this._controls.enabled = true
-    this._controls.autoRotate = !this._autoRotatePaused
+    if (this._isOrtho) {
+      this._controls.enabled = false
+      this._controls.autoRotate = false
+    } else {
+      this._controls.enabled = true
+      this._controls.autoRotate = !this._autoRotatePaused
+    }
   }
 
   /**
