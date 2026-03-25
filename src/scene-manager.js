@@ -35,13 +35,14 @@ export function createSceneManager(opts) {
     if (runner && !runner.isComplete) {
       runner.snap()
       // Finalize without calling endTransition — director handles its own state
-      if (pendingVisibility) {
-        applyVisibility(pendingVisibility)
-        pendingVisibility = null
+      const pending = pendingVisibility
+      pendingVisibility = null
+      runner = null  // Clear BEFORE applyVisibility so keepVisible doesn't re-show objects
+      if (pending) {
+        applyVisibility(pending)
       }
       const active = currentIndex >= 0 ? scenes[currentIndex] : null
       if (active && !currentSameCamera) director.setKeyframe(resolveKeyframe(active))
-      runner = null
       transitionSourceScene = null
       transitionSourceProps = null
     }
@@ -292,9 +293,11 @@ export function createSceneManager(opts) {
   // --- Transition finalization ---
 
   function finalizeTransition() {
-    if (pendingVisibility) {
-      applyVisibility(pendingVisibility)
-      pendingVisibility = null
+    const pending = pendingVisibility
+    pendingVisibility = null
+    runner = null  // Clear BEFORE applyVisibility so keepVisible doesn't re-show objects
+    if (pending) {
+      applyVisibility(pending)
     }
     // Set keyframe for the active scene — skip when same camera prop (no leaking)
     const active = currentIndex >= 0 ? scenes[currentIndex] : null
@@ -303,7 +306,6 @@ export function createSceneManager(opts) {
       director.setKeyframe({ ...resolveKeyframe(active), immediate })
     }
     director.endTransition()
-    runner = null
   }
 
   // --- Core navigation ---
