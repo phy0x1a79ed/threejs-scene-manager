@@ -203,7 +203,17 @@ export class TransitionRunner {
         }
       })
     }
-    for (const obj of [...fadeOutObjs, ...fadeInObjs]) capture(obj)
+    // For fadeIn objects, prefer stored _baseOpacity (may have been faded to 0 by a prior crossfade)
+    const captureFadeIn = (obj) => {
+      obj.traverse((child) => {
+        if (child.material && !captured.has(child.material)) {
+          const base = child.material._baseOpacity ?? (getOpacity(child.material) || 1)
+          captured.set(child.material, base)
+        }
+      })
+    }
+    for (const obj of fadeOutObjs) capture(obj)
+    for (const obj of fadeInObjs) captureFadeIn(obj)
 
     // Make fadeIn objects visible but at 0 opacity
     for (const obj of fadeInObjs) {
