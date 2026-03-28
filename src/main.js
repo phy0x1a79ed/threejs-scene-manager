@@ -1,5 +1,6 @@
 import * as THREE from 'three'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
+import { CSS2DRenderer } from 'three/addons/renderers/CSS2DRenderer.js'
 import { createSceneManager } from './scene-manager.js'
 import { createContent, scenes } from './scenes/index.js'
 import { initPointCloud } from './scenes/points.js'
@@ -16,16 +17,26 @@ renderer.shadowMap.type = THREE.PCFSoftShadowMap
 renderer.toneMapping = THREE.ACESFilmicToneMapping
 renderer.toneMappingExposure = 0.9
 
+// --- CSS2D Renderer (labels overlay) ---
+const css2dRenderer = new CSS2DRenderer()
+css2dRenderer.setSize(window.innerWidth, window.innerHeight)
+css2dRenderer.domElement.style.position = 'absolute'
+css2dRenderer.domElement.style.top = '0'
+css2dRenderer.domElement.style.left = '0'
+css2dRenderer.domElement.style.pointerEvents = 'none'
+css2dRenderer.domElement.style.zIndex = '5'
+document.body.appendChild(css2dRenderer.domElement)
+
 // --- Scene ---
 const scene = new THREE.Scene()
-scene.fog = new THREE.FogExp2(0x000000, 0.035)
+scene.fog = new THREE.FogExp2(0x000000, 0.008)
 
 // --- Camera ---
 const camera = new THREE.PerspectiveCamera(
   60,
   window.innerWidth / window.innerHeight,
   0.1,
-  100
+  200
 )
 camera.position.set(0, 2, 5)
 camera.lookAt(0, 0, 0)
@@ -73,6 +84,7 @@ window.addEventListener('resize', () => {
   camera.aspect = window.innerWidth / window.innerHeight
   camera.updateProjectionMatrix()
   renderer.setSize(window.innerWidth, window.innerHeight)
+  css2dRenderer.setSize(window.innerWidth, window.innerHeight)
 })
 
 // --- Animate ---
@@ -85,6 +97,7 @@ function animate() {
   controls.update()
 
   renderer.render(scene, camera)
+  css2dRenderer.render(scene, camera)
 }
 
 animate()

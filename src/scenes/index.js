@@ -3,12 +3,15 @@ import front from './front.js'
 import overview from './overview.js'
 import points from './points.js'
 import chart from './chart.js'
+import umapGrid, { initUmapGrid } from './umap-grid.js'
 
 // Shared state accessible by scene files
 export const shared = {
   mesh: null,
   floor: null,
   pointCloud: null,
+  umapGrid: null,
+  umapCTs: [],
 }
 
 export function createContent(scene) {
@@ -35,6 +38,9 @@ export function createContent(scene) {
   shared.mesh.position.y = 1.5
   shared.mesh.castShadow = true
   scene.add(shared.mesh)
+
+  // UMAP grid (async — renders once data arrives)
+  initUmapGrid(scene)
 }
 
-export const scenes = [front, overview, points, chart]
+export const scenes = [umapGrid, front, overview, points, chart]

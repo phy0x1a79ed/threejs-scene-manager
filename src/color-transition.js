@@ -4,12 +4,13 @@ const vertexShader = /* glsl */ `
   attribute vec3 prevColor;
   attribute vec3 currentColor;
   uniform float uBlend;
+  uniform float uPointSize;
   varying vec3 vColor;
 
   void main() {
     vColor = mix(prevColor, currentColor, uBlend);
     vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
-    gl_PointSize = 4.0 * (300.0 / -mvPosition.z);
+    gl_PointSize = uPointSize * (150.0 / -mvPosition.z);
     gl_Position = projectionMatrix * mvPosition;
   }
 `
@@ -30,9 +31,12 @@ const fragmentShader = /* glsl */ `
  *
  * @param {THREE.BufferGeometry} geometry — must already have a 'position' attribute
  * @param {Float32Array} initialColors — rgb triplets, same length as position array
+ * @param {object} [opts]
+ * @param {number} [opts.pointSize=4.0] — base point size
  * @returns {{ material, setColors, update, dispose, uniforms }}
  */
-export function createColorTransition(geometry, initialColors) {
+export function createColorTransition(geometry, initialColors, opts = {}) {
+  const pointSize = opts.pointSize ?? 4.0
   const count = geometry.attributes.position.count
 
   const prevAttr = new THREE.BufferAttribute(new Float32Array(count * 3), 3)
@@ -45,7 +49,10 @@ export function createColorTransition(geometry, initialColors) {
   geometry.setAttribute('prevColor', prevAttr)
   geometry.setAttribute('currentColor', currAttr)
 
-  const uniforms = { uBlend: { value: 1.0 } }
+  const uniforms = {
+    uBlend: { value: 1.0 },
+    uPointSize: { value: pointSize },
+  }
 
   const material = new THREE.ShaderMaterial({
     vertexShader,
